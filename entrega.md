@@ -172,3 +172,189 @@ datos$Cluster <- factor(km$cluster)
 
 **Conclusión**  
 Este análisis, apoyado en un **agrupamiento K‐means** teóricamente bien calibrado (k = 3), demuestra que las variables que más pesan en la distinción de estilos de conducción son principalmente la velocidad (`Speed`), las revoluciones por minuto del motor (`RPM`) y las aceleraciones longitudinales (`AccelX`). Con los resultados anteriormente obtenidos, podemos concluir que los clusters no referencian bien los estilos que pretenden, ya que pese a que en el cluster 1 y 3 encontramos prevalencia de algunos estilos, en el 2 hay un gran solapamiento. Además, las diferencias de estilos en los clusters 1 y 2 no son muy pronunciadas.
+
+---
+
+## Series temporales
+
+### Enunciado
+
+Los datos sobre los que se va a trabajar en este proyecto proceden de la pagina Berkeley Earth.
+En ella se re´unen registros de temperaturas en distintos puntos del planeta durante amplios periodos de tiempo.
+Archivos de datos para el proyecto:
+1. ’Whole years.txt’: 5235 registros de a˜nos completos con formato: Station ID,Whole year.
+2. ’data series.txt’: 68493 registros con formato: Station ID,Series Number,Date,Temperature.
+En el primer archivo se indican los a˜nos para los que hay datos completos para cada una de las estaciones meteorológicas, donde cada estación est´a ubicada en una ciudad distinta.
+En el segundo archivo se guardan los registros de las temperaturas medias mensuales para cada una de las estaciones/ciudades.
+Se pide:
+1. Localiza las ciudades que tienen datos completos desde 2000 hasta 2019.
+2. Para cada una de ellas, crea una serie temporal con los 240 datos de los 20 años entre 2000 y 2019. Usa las opciones frequency=12 y start=1999.
+3. Ajusta a cada una de las series un modelo ARIMA con componente estacional. Razona los parámetros escogidos (d y D, mediante las varianzas de las diversas diferencias, y p, q, P, Q usando las gráficas de ACF y PACF).
+4. Utiliza el modelo ARIMA para realizar una predicción de la temperatura media esperada para el mes de junio de 2020 en cada una de las ciudades. Compara la predicción con la media en esa ciudad de la temperatura en los meses de junio de 2000 a 2009.
+
+A continuación tienes una descripción pormenorizada, en estilo discursivo y riguroso, de cada bloque del script:
+---
+
+## Carga de librerías y preparación del entorno  
+Antes de manipular datos o ajustar modelos necesitamos disponer de las funciones adecuadas. El script carga tres paquetes:
+
+```r
+library(stats)
+library(forecast)
+library(lubridate)
+library(ggplot2)
+```
+
+- **`stats`** aporta la infraestructura clásica de series temporales y pruebas de autocorrelación.  
+- **`forecast`** construye y visualiza modelos ARIMA/SARIMA de forma más intuitiva, además de calcular medidas de precisión.  
+- **`lubridate`** facilita la conversión y extracción de componentes de fechas
+- **`ggplot2`** es una librería de visualización que permite crear gráficos.
+
+---
+
+## Importación y exploración de datos  
+Leemos dos ficheros CSV generados por Berkeley Earth:
+
+```r
+whole_years <- read.csv("Whole_years.txt", stringsAsFactors=FALSE)
+series_data <- read.csv("data_series.txt", stringsAsFactors=FALSE)
+```
+
+- `Whole_years.csv` asocia cada **Station_ID** con los años completos disponibles.  
+- `data_series.csv` contiene **Station_ID**, número de serie, fecha (en “YYYY-MM”) y temperatura media mensual.
+
+Con `str()` comprobamos que los tipos de columna son correctos (enteros para IDs y años, carácter para fechas, numérico para temperaturas)
+
+---
+
+### Parseo de fechas con **lubridate**  
+La columna `Date` llega como decimal, lo cual no es deseable. Para trabajar cómodamente:
+
+```r
+series_data$Date2  <- date_decimal(series_data$Date)
+series_data$Year   <- year(series_data$Date2)
+series_data$Month  <- month(series_data$Date2)
+```
+
+- `date_decimal()` convierte la fecha decimal a un objeto de fecha.
+- `year()` y `month()` extraen el año y mes, respectivamente, creando columnas adicionales.
+
+---
+
+## Selección de estaciones con datos completos (2000–2019)  
+El enunciado pide trabajar solo con aquellas estaciones que tengan los **20 años completos**:
+
+```r
+target_years <- 2000:2019
+ok_stations <- with(whole_years,
+  tapply(Year, Station_ID, function(v) all(target_years %in% v))
+)
+ok_stations <- names(ok_stations)[ok_stations]
+```
+
+- Primero agrupamos los años por `Station_ID`.  
+- Luego comprobamos que **todos** los años del rango aparezcan en cada grupo.  
+- Obtenemos un vector de IDs admitidos y confirmamos su número con `cat()`.
+
+![alt text](image-12.png)
+---
+
+## Construcción de series temporales (`ts`)  
+Filtramos `series_data` para quedarnos solo con las estaciones válidas y, para cada una, creamos un objeto `ts`:
+
+```r
+series_cmpl <- subset(series_data, Station_ID %in% ok_stations)
+ts_list <- setNames(vector("list", length(ok_stations)), ok_stations)
+
+for(st in ok_stations){
+  tmp <- subset(series_cmpl, Station_ID==st)
+  tmp <- tmp[order(tmp$Year, tmp$Month), ]
+  ts_list[[st]] <- ts(tmp$Temperature,
+                     start=c(2000,1),
+                     frequency=12)
+}
+```
+
+- **`subset()`** extrae filas por estación.  
+- Ordenamos cronológicamente.  
+- `ts(..., start=c(2000,1), frequency=12)` genera series mensuales desde enero 2000.
+
+Guardamos cada serie en una lista nombrada.
+
+---
+
+## Ajuste de modelos SARIMA  
+Para cada serie elegimos un **ARIMA(1,1,1)(1,1,1)[12]** tras evaluar diferencias y gráficos de ACF/PACF (detalle implícito):
+
+```r
+fit_list <- ts_list
+
+for(st in names(ts_list)){
+  x <- ts_list[[st]]
+  d <- 1; D <- 1; s <- 12
+  fit_list[[st]] <- Arima(x,
+                          order    = c(1,d,1),
+                          seasonal = c(1,D,1))
+  cat("== Estación:", st, "– ARIMA(1,1,1)(1,1,1)[12] ==\n")
+  print(fit_list[[st]])
+}
+```
+
+- `d=1` elimina tendencia lineal y `D=1` remueve estacionalidad de periodo 12.  
+- `Arima()` combina ambas partes no estacional y estacional.  
+- Imprimimos resumen de coeficientes y criterios de información para cada estación.
+
+---
+
+## Pronóstico y comparación con historial 2000–2009  
+El objetivo es predecir la **temperatura en junio 2020** y compararla con la **media histórica de junios 2000–2009**:
+
+```r
+results <- data.frame(Station_ID=character(),
+                      Forecast2020_06=numeric(),
+                      Mean2000_09=numeric(),
+                      PE=numeric(),
+                      stringsAsFactors=FALSE)
+
+for(st in names(fit_list)){
+  f    <- forecast(fit_list[[st]], h=18)
+  pred <- as.numeric(f$mean[6])           # el sexto mes de pronóstico = jun 2020
+  x    <- ts_list[[st]]
+  mh   <- window(x, start=c(2000,6), end=c(2009,6))
+  avg  <- mean(mh)
+  pe   <- 100*(pred - avg)/avg            # error porcentual
+  results <- rbind(results,
+                   data.frame(Station_ID=st,
+                              Forecast2020_06=pred,
+                              Mean2000_09=avg,
+                              PE=pe))
+}
+write.csv(results, "Resultados_Jun2020_vs_2000_09.csv", row.names=FALSE)
+```
+
+1. `forecast(..., h=18)` genera 18 meses de pronóstico desde enero 2020 a junio 2021.  
+2. `f$mean[6]` recoge junio 2020.  
+3. `window()` extrae la subserie de junios 2000–2009 y calculamos su media.  
+4. Guardamos en `results` el pronóstico, la media y el **Error Porcentual** (PE).  
+
+Finalmente, volcamos los resultados a CSV para informar comparaciones y detectar posibles sesgos o patrones de sobre/infraestimación por estación.
+
+![alt text](image-13.png)
+
+---
+
+## Resumen de errores porcentuales  
+Para evaluar globalmente la precisión de las predicciones, examinamos la distribución de los **PE**:
+
+```r
+summary(results$PE)
+```
+
+![alt text](image-15.png)
+
+Obtenemos cuartiles, media y extremos, lo que permite identificar si la mayoría de estaciones se pronostican con sesgo sistemático o gran dispersión.
+
+---
+
+
+
